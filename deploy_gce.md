@@ -13,10 +13,10 @@ gcloud auth login
 # Set your project
 gcloud config set project YOUR_PROJECT_ID
 
-# Create f1-micro instance (Always Free)
+# Create e2-micro instance (Always Free)
 gcloud compute instances create discord-bot \
     --zone=us-west1-b \
-    --machine-type=f1-micro \
+    --machine-type=e2-micro \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
     --boot-disk-size=30GB \
@@ -25,9 +25,9 @@ gcloud compute instances create discord-bot \
 ```
 
 **Available free tier regions:**
-- `us-west1-b` (Oregon)
-- `us-central1-a` (Iowa)
-- `us-east1-b` (South Carolina)
+- `us-west1` (Oregon) - use zone `us-west1-b`
+- `us-central1` (Iowa) - use zone `us-central1-a`
+- `us-east1` (South Carolina) - use zone `us-east1-b`
 
 ## Step 2: Upload Your Code
 
@@ -144,9 +144,14 @@ gcloud billing accounts list
 ```
 
 **Free tier includes:**
-- 1 f1-micro instance (0.6GB RAM, shared CPU)
+- 1 non-preemptible e2-micro instance per month (1GB RAM, 2 shared vCPUs)
+- Usage is calculated by time - all e2-micro instances combined must stay under the monthly hour limit
 - 30GB standard persistent disk
-- 1GB network egress per month
+- 1GB outbound data transfer from North America per month
+
+**Important notes:**
+- GPUs and TPUs are NOT included in free tier (always charged)
+- Free tier is region-specific: us-west1, us-central1, or us-east1 only
 
 Your bot should easily fit within these limits with 3 requests/day!
 
@@ -175,7 +180,7 @@ python bot.py
 ```
 
 ### Out of memory?
-f1-micro has limited RAM. If you get OOM errors:
+e2-micro has 1GB RAM. If you get OOM errors:
 ```bash
 # Add swap space
 sudo fallocate -l 1G /swapfile
