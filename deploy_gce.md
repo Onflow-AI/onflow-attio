@@ -86,6 +86,8 @@ Save and exit (Ctrl+X, then Y, then Enter)
 
 ## Step 5: Start the Bot
 
+passowrd is onflow
+
 ```bash
 # Restart the service with new env vars
 sudo systemctl restart discord-bot

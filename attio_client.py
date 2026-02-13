@@ -561,9 +561,11 @@ Website domain:"""
             attributes['email_addresses'] = [{'email_address': data['email']}]
 
         if data.get('phone'):
-            # Try simple structure first, fallback to just storing in notes if it fails
+            # Attio phone number format
             attributes['phone_numbers'] = [{
-                'original_phone_number': data['phone']
+                'country_code': None,
+                'original_phone_number': data['phone'],
+                'phone_number': data['phone']
             }]
 
         if data.get('job_title'):
