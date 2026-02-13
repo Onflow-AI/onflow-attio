@@ -247,10 +247,70 @@ class AttioClient:
             # Don't raise - the person was created successfully, just without the link
             # We log the error but don't fail the whole operation
 
+    def _find_existing_company(self, company_name: str, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Search for an existing company by name or domain.
+
+        Args:
+            company_name: Name of the company to search for
+            domain: Optional domain to search by
+
+        Returns:
+            Company record if found, None otherwise
+        """
+        try:
+            endpoint = f"{self.base_url}/objects/companies/records/query"
+
+            # Build filter - search by name or domain
+            filters = []
+            if company_name:
+                filters.append({
+                    "attribute": "name",
+                    "filter_type": "contains",
+                    "value": company_name
+                })
+
+            if domain and len(filters) == 0:
+                filters.append({
+                    "attribute": "domains",
+                    "filter_type": "contains",
+                    "value": domain
+                })
+
+            payload = {
+                "filter": {
+                    "or": filters
+                },
+                "limit": 1
+            }
+
+            logger.info(f"Searching for existing company: {company_name}")
+            response = requests.post(
+                endpoint,
+                headers=self.headers,
+                json=payload,
+                timeout=15
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('data') and len(result['data']) > 0:
+                company = result['data'][0]
+                logger.info(f"Found existing company: {company.get('values', {}).get('name')}")
+                return company
+
+            logger.info(f"No existing company found for: {company_name}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error searching for company: {e}")
+            return None
+
     def _create_or_get_company(self, company_name: str, notes: str = None) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Create a company record or get existing one.
-        Searches for the company website using Gemini with web search.
+        First checks if company exists, then creates if not found.
 
         Args:
             company_name: Name of the company
@@ -266,7 +326,13 @@ class AttioClient:
             # Search for company website using Gemini
             website_domain = self._search_company_website(company_name)
 
-            # Create company record with website
+            # First, check if company already exists
+            existing_company = self._find_existing_company(company_name, website_domain)
+            if existing_company:
+                logger.info(f"Using existing company: {company_name}")
+                return existing_company, website_domain
+
+            # Company doesn't exist, create it
             company_values = {
                 'name': company_name
             }
@@ -290,7 +356,7 @@ class AttioClient:
 
             endpoint = f"{self.base_url}/objects/companies/records"
 
-            logger.info(f"Creating company: {company_name}")
+            logger.info(f"Creating new company: {company_name}")
             response = requests.post(
                 endpoint,
                 headers=self.headers,
@@ -301,8 +367,6 @@ class AttioClient:
             response.raise_for_status()
             company_record = response.json()
 
-            # Log the full response to debug record_id extraction
-            logger.info(f"Company creation response: {company_record}")
             logger.info(f"Successfully created company: {company_name}")
             return company_record, website_domain
 
@@ -419,11 +483,6 @@ Website domain:"""
         """
         # Map common attribute slugs to their proper types and titles
         attribute_config = {
-            'linkedin_url': {
-                'title': 'LinkedIn URL',
-                'type': 'text',
-                'is_multiselect': False
-            },
             'job_title': {
                 'title': 'Job Title',
                 'type': 'text',
@@ -574,8 +633,7 @@ Website domain:"""
         if data.get('location'):
             attributes['location'] = data['location']
 
-        if data.get('linkedin_url'):
-            attributes['linkedin_url'] = data['linkedin_url']
+        # LinkedIn is handled by Attio's default linkedin field, no need to set it manually
 
         # Link to company in creation payload
         # Prefer domain string (simplest), fallback to record_id reference format
