@@ -110,11 +110,12 @@ class AttioClient:
         object_slug = object_plural[lead_data.object_type]
         endpoint = f"{self.base_url}/objects/{object_slug}/records"
 
-        # Add matching attribute for upsert (assert) logic
+        # Build query parameters for upsert (assert) logic
+        params = {}
         if lead_data.object_type == "person" and data.get('email'):
-            payload['matching_attribute'] = 'email_addresses'
+            params['matching_attribute'] = 'email_addresses'
         elif lead_data.object_type == "company" and company_domain:
-            payload['matching_attribute'] = 'domains'
+            params['matching_attribute'] = 'domains'
 
         try:
             logger.info(f"Upserting {lead_data.object_type} in Attio: {lead_data.name}")
@@ -124,6 +125,7 @@ class AttioClient:
                 endpoint,
                 headers=self.headers,
                 json=payload,
+                params=params,
                 timeout=15
             )
 
@@ -167,6 +169,7 @@ class AttioClient:
                                     endpoint,
                                     headers=self.headers,
                                     json=payload,
+                                    params=params,
                                     timeout=15
                                 )
                                 response.raise_for_status()
@@ -358,9 +361,10 @@ class AttioClient:
                 }
             }
 
-            # Add matching attribute for upsert if we have a domain
+            # Build query parameters for upsert if we have a domain
+            company_params = {}
             if website_domain:
-                company_payload['matching_attribute'] = 'domains'
+                company_params['matching_attribute'] = 'domains'
 
             endpoint = f"{self.base_url}/objects/companies/records"
 
@@ -370,6 +374,7 @@ class AttioClient:
                 endpoint,
                 headers=self.headers,
                 json=company_payload,
+                params=company_params,
                 timeout=15
             )
 
