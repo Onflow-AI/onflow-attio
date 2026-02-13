@@ -46,24 +46,27 @@ class AttioClient:
         lead_data: LeadData
     ) -> Dict[str, Any]:
         """
-        Create a new record in Attio (person, company, deal, or user).
+        Create or update a record in Attio (person, company, deal, or user).
 
-        Automatically determines the correct object type and endpoint
-        based on lead_data.object_type. If a field doesn't exist, it will
-        be automatically created.
+        Uses upsert logic (assert):
+        - For people: matches on email, updates if found, creates if not
+        - For companies: matches on domain, updates if found, creates if not
+        - Automatically determines the correct object type and endpoint
+        - If a field doesn't exist, it will be automatically created
+        - Multiselect values are overwritten (not appended)
 
         For people with companies, this will:
-        1. Create the company record first
+        1. Create/update the company record first
         2. Link the person to the company
 
         Args:
             lead_data: Structured lead data from Gemini
 
         Returns:
-            Dictionary containing created record information
+            Dictionary containing created/updated record information
 
         Raises:
-            AttioAPIError: If record creation fails
+            AttioAPIError: If record creation/update fails
         """
         # Validate object type
         valid_types = ["person", "company", "deal", "user"]
@@ -107,10 +110,17 @@ class AttioClient:
         object_slug = object_plural[lead_data.object_type]
         endpoint = f"{self.base_url}/objects/{object_slug}/records"
 
-        try:
-            logger.info(f"Creating {lead_data.object_type} in Attio: {lead_data.name}")
+        # Add matching attribute for upsert (assert) logic
+        if lead_data.object_type == "person" and data.get('email'):
+            payload['matching_attribute'] = 'email_addresses'
+        elif lead_data.object_type == "company" and company_domain:
+            payload['matching_attribute'] = 'domains'
 
-            response = requests.post(
+        try:
+            logger.info(f"Upserting {lead_data.object_type} in Attio: {lead_data.name}")
+
+            # Use PUT for upsert (assert) - creates if not found, updates if found
+            response = requests.put(
                 endpoint,
                 headers=self.headers,
                 json=payload,
@@ -121,7 +131,7 @@ class AttioClient:
             created_record = response.json()
 
             record_id = created_record.get('id', {}).get('record_id', 'unknown')
-            logger.info(f"Successfully created {lead_data.object_type}: {record_id}")
+            logger.info(f"Successfully created/updated {lead_data.object_type}: {record_id}")
 
             # Company link is already included in the creation payload if available
             # No separate linking step needed
@@ -151,9 +161,9 @@ class AttioClient:
                                 # Create the missing attribute
                                 self._create_attribute(object_slug, missing_attribute)
 
-                                # Retry the record creation
-                                logger.info(f"Retrying record creation after creating attribute '{missing_attribute}'")
-                                response = requests.post(
+                                # Retry the record creation/update
+                                logger.info(f"Retrying record upsert after creating attribute '{missing_attribute}'")
+                                response = requests.put(
                                     endpoint,
                                     headers=self.headers,
                                     json=payload,
@@ -309,8 +319,8 @@ class AttioClient:
 
     def _create_or_get_company(self, company_name: str, notes: str = None) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Create a company record or get existing one.
-        First checks if company exists, then creates if not found.
+        Create or update a company record using upsert logic.
+        Uses domain to match existing company, creates if not found.
 
         Args:
             company_name: Name of the company
@@ -320,19 +330,13 @@ class AttioClient:
             Tuple of (company_record dictionary, domain string)
 
         Raises:
-            AttioAPIError: If company creation fails
+            AttioAPIError: If company creation/update fails
         """
         try:
             # Search for company website using Gemini
             website_domain = self._search_company_website(company_name)
 
-            # First, check if company already exists
-            existing_company = self._find_existing_company(company_name, website_domain)
-            if existing_company:
-                logger.info(f"Using existing company: {company_name}")
-                return existing_company, website_domain
-
-            # Company doesn't exist, create it
+            # Build company payload
             company_values = {
                 'name': company_name
             }
@@ -354,10 +358,15 @@ class AttioClient:
                 }
             }
 
+            # Add matching attribute for upsert if we have a domain
+            if website_domain:
+                company_payload['matching_attribute'] = 'domains'
+
             endpoint = f"{self.base_url}/objects/companies/records"
 
-            logger.info(f"Creating new company: {company_name}")
-            response = requests.post(
+            logger.info(f"Upserting company: {company_name}")
+            # Use PUT for upsert - updates if domain matches, creates if not
+            response = requests.put(
                 endpoint,
                 headers=self.headers,
                 json=company_payload,
@@ -367,7 +376,7 @@ class AttioClient:
             response.raise_for_status()
             company_record = response.json()
 
-            logger.info(f"Successfully created company: {company_name}")
+            logger.info(f"Successfully upserted company: {company_name}")
             return company_record, website_domain
 
         except requests.exceptions.RequestException as e:
@@ -482,14 +491,20 @@ Website domain:"""
             AttioAPIError: If attribute creation fails
         """
         # Map common attribute slugs to their proper types and titles
+        # Note: Most standard Attio fields already exist and don't need creation
         attribute_config = {
             'job_title': {
                 'title': 'Job Title',
                 'type': 'text',
                 'is_multiselect': False
             },
-            'location': {
-                'title': 'Location',
+            'primary_location': {
+                'title': 'Primary Location',
+                'type': 'location',
+                'is_multiselect': False
+            },
+            'linkedin': {
+                'title': 'LinkedIn',
                 'type': 'text',
                 'is_multiselect': False
             },
@@ -498,10 +513,10 @@ Website domain:"""
                 'type': 'text',
                 'is_multiselect': False
             },
-            'companies': {
-                'title': 'Companies',
+            'company': {
+                'title': 'Company',
                 'type': 'reference',  # Reference/relationship type
-                'is_multiselect': True,  # Can link to multiple companies
+                'is_multiselect': False,  # Single company per person
                 'reference_object': 'companies'  # Links to companies object
             },
         }
@@ -631,9 +646,10 @@ Website domain:"""
             attributes['job_title'] = data['job_title']
 
         if data.get('location'):
-            attributes['location'] = data['location']
+            attributes['primary_location'] = data['location']
 
-        # LinkedIn is handled by Attio's default linkedin field, no need to set it manually
+        if data.get('linkedin_url'):
+            attributes['linkedin'] = data['linkedin_url']
 
         # Link to company in creation payload
         # Prefer domain string (simplest), fallback to record_id reference format
@@ -664,7 +680,7 @@ Website domain:"""
         }
 
         if data.get('location'):
-            attributes['locations'] = [data['location']]
+            attributes['primary_location'] = data['location']
 
         if data.get('email'):
             attributes['domains'] = [{'domain': data['email'].split('@')[1] if '@' in data['email'] else data['email']}]
