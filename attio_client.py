@@ -335,11 +335,12 @@ class AttioClient:
                 update_values['email_addresses'] = [{'email_address': data['email']}]
 
             if data.get('phone'):
-                update_values['phone_numbers'] = [{
-                    'country_code': None,
-                    'original_phone_number': data['phone'],
-                    'phone_number': data['phone']
-                }]
+                # Attio phone number format - simple string format in E.164 (e.g., +15558675309)
+                phone = data['phone']
+                # Ensure phone starts with + for E.164 format
+                if not phone.startswith('+'):
+                    phone = '+' + phone.lstrip('+')
+                update_values['phone_numbers'] = [phone]
 
             if data.get('job_title'):
                 update_values['job_title'] = data['job_title']
@@ -826,12 +827,13 @@ Website domain:"""
             attributes['email_addresses'] = [{'email_address': data['email']}]
 
         if data.get('phone'):
-            # Attio phone number format
-            attributes['phone_numbers'] = [{
-                'country_code': None,
-                'original_phone_number': data['phone'],
-                'phone_number': data['phone']
-            }]
+            # Attio phone number format - simple string format in E.164 (e.g., +15558675309)
+            phone = data['phone']
+            # Ensure phone starts with + for E.164 format
+            if not phone.startswith('+'):
+                # If no +, try to add it (assuming US +1 if no country code)
+                phone = '+' + phone.lstrip('+')
+            attributes['phone_numbers'] = [phone]
 
         if data.get('job_title'):
             attributes['job_title'] = data['job_title']
