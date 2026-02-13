@@ -139,15 +139,12 @@ class AttioClient:
         use_upsert = False
 
         if lead_data.object_type == "person":
-            # For people: try to match on email, fallback to phone
+            # For people: only email_addresses is a unique attribute for matching
             if data.get('email'):
                 params['matching_attribute'] = 'email_addresses'
                 use_upsert = True
-            elif data.get('phone'):
-                params['matching_attribute'] = 'phone_numbers'
-                use_upsert = True
             else:
-                logger.info("No email or phone provided, will create new person record")
+                logger.info("No email provided, will create new person record (phone is not unique)")
         elif lead_data.object_type == "company" and company_domain:
             params['matching_attribute'] = 'domains'
             use_upsert = True
@@ -449,7 +446,12 @@ class AttioClient:
 
     def _find_existing_company(self, company_name: str, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Search for an existing company by name or domain.
+        Search for an existing company by name with smart matching.
+
+        Logic:
+        1. Try exact match first
+        2. If no exact match, try fuzzy/contains search
+        3. If multiple matches, pick the best match based on name similarity
 
         Args:
             company_name: Name of the company to search for
@@ -461,27 +463,12 @@ class AttioClient:
         try:
             endpoint = f"{self.base_url}/objects/companies/records/query"
 
-            # Build filter - search by name or domain
-            filters = []
-            if company_name:
-                filters.append({
-                    "attribute": "name",
-                    "filter_type": "contains",
-                    "value": company_name
-                })
-
-            if domain and len(filters) == 0:
-                filters.append({
-                    "attribute": "domains",
-                    "filter_type": "contains",
-                    "value": domain
-                })
-
+            # First, try exact match by name
             payload = {
                 "filter": {
-                    "or": filters
+                    "name": company_name  # Exact match without filter_type
                 },
-                "limit": 1
+                "limit": 10  # Get multiple results to check for duplicates
             }
 
             logger.info(f"Searching for existing company: {company_name}")
@@ -494,11 +481,25 @@ class AttioClient:
 
             response.raise_for_status()
             result = response.json()
+            matches = result.get('data', [])
 
-            if result.get('data') and len(result['data']) > 0:
-                company = result['data'][0]
-                logger.info(f"Found existing company: {company.get('values', {}).get('name')}")
-                return company
+            if matches:
+                # Check for exact match first
+                for company in matches:
+                    company_name_in_db = company.get('values', {}).get('name', '')
+                    if company_name_in_db.lower() == company_name.lower():
+                        logger.info(f"Found exact company match: {company_name_in_db}")
+                        return company
+
+                # If no exact match but we have results, use the first one (closest match)
+                if len(matches) > 1:
+                    logger.warning(f"Found {len(matches)} companies matching '{company_name}', using closest match")
+                    for i, match in enumerate(matches):
+                        logger.info(f"  Match {i+1}: {match.get('values', {}).get('name')}")
+
+                best_match = matches[0]
+                logger.info(f"Using closest match: {best_match.get('values', {}).get('name')}")
+                return best_match
 
             logger.info(f"No existing company found for: {company_name}")
             return None
@@ -509,8 +510,12 @@ class AttioClient:
 
     def _create_or_get_company(self, company_name: str, notes: str = None) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Create or update a company record using upsert logic.
-        Uses domain to match existing company, creates if not found.
+        Find existing company by name or create/update using domain matching.
+
+        Logic:
+        1. Search for existing company by name first
+        2. If found, return that company (links to existing record)
+        3. If not found, search for website domain and create/upsert
 
         Args:
             company_name: Name of the company
@@ -523,7 +528,18 @@ class AttioClient:
             AttioAPIError: If company creation/update fails
         """
         try:
-            # Search for company website using Gemini
+            # First, search for existing company by name
+            existing_company = self._find_existing_company(company_name)
+
+            if existing_company:
+                logger.info(f"Found existing company by name: {company_name}")
+                # Extract domain from existing company if available
+                existing_domains = existing_company.get('values', {}).get('domains', [])
+                existing_domain = existing_domains[0].get('domain') if existing_domains else None
+                return existing_company, existing_domain
+
+            # If not found by name, search for company website using Gemini
+            logger.info(f"Company '{company_name}' not found, will create new record")
             website_domain = self._search_company_website(company_name)
 
             # Build company payload
