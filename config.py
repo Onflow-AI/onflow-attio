@@ -29,8 +29,8 @@ class Config:
 
     # Google AI Studio Configuration
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-    GOOGLE_MODEL = "gemini-2.5-flash-exp"  # Primary model (2.5 Flash)
-    GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash-lite-exp"  # Fallback when quota runs out (2.5 Flash Lite)
+    GOOGLE_MODEL = "gemini-2.5-flash"  # Primary model (2.5 Flash)
+    GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash-lite"  # Fallback when quota runs out (2.5 Flash Lite)
     GOOGLE_MAX_TOKENS = 1024
 
     # Attio CRM Configuration
