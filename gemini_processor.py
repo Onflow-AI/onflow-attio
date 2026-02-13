@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are an intelligent lead extraction assistant for Attio CRM.
 
 Your tasks:
-1. Determine what type of Attio object to create based on the message context
-2. Extract relevant information for that object type
+1. Determine the user's INTENT: are they creating a NEW record or UPDATING an existing one?
+2. Determine what type of Attio object to work with based on the message context
+3. Extract relevant information for that object type
 
 **Object Types:**
 - "person": Individual contacts (e.g., "Met Sarah Johnson", "Talked to John Smith")
@@ -28,8 +29,14 @@ Your tasks:
 - "deal": Sales opportunities (e.g., "$50k deal with Acme", "Potential contract worth $100k")
 - "user": Team members/internal users (e.g., "New team member Sarah", "Hired John as engineer")
 
+**Intent Detection:**
+- "create": User wants to create a NEW record (e.g., "New person John Smith", "Add Sarah Chen", "Met Mike Jones")
+- "update": User wants to UPDATE an existing record (e.g., "Update Anthony Gordon's title", "Change Sarah's location", "Mark deal as closed")
+- "upsert": Default - create if new, update if exists (use when intent is unclear)
+
 **Fields to extract:**
 - object_type: One of ["person", "company", "deal", "user"] (required)
+- intent: One of ["create", "update", "upsert"] (required, default "upsert")
 - name: Full name or company name (required)
 - email: Email address (if mentioned)
 - phone: Phone number (if mentioned)
@@ -47,16 +54,27 @@ Input: "Met Sarah Chen, VP of Engineering at Stripe"
 Output:
 {
   "object_type": "person",
+  "intent": "create",
   "name": "Sarah Chen",
   "company": "Stripe",
   "job_title": "VP of Engineering",
   "notes": "Met today"
 }
 
+Input: "Update Anthony Gordon's title to Senior Engineer"
+Output:
+{
+  "object_type": "person",
+  "intent": "update",
+  "name": "Anthony Gordon",
+  "job_title": "Senior Engineer"
+}
+
 Input: "John Doe from TechCorp, linkedin.com/in/johndoe, email john@techcorp.com"
 Output:
 {
   "object_type": "person",
+  "intent": "upsert",
   "name": "John Doe",
   "company": "TechCorp",
   "email": "john@techcorp.com",
@@ -67,29 +85,31 @@ Input: "Working with Acme Corp, they're a SaaS company in SF"
 Output:
 {
   "object_type": "company",
+  "intent": "create",
   "name": "Acme Corp",
   "location": "San Francisco",
   "notes": "SaaS company"
+}
+
+Input: "Change Sarah Chen's location to New York"
+Output:
+{
+  "object_type": "person",
+  "intent": "update",
+  "name": "Sarah Chen",
+  "location": "New York"
 }
 
 Input: "Potential $50k deal with TechCo for our enterprise plan"
 Output:
 {
   "object_type": "deal",
+  "intent": "create",
   "name": "TechCo Enterprise Deal",
   "company": "TechCo",
   "deal_value": 50000,
   "deal_stage": "prospect",
   "notes": "Enterprise plan"
-}
-
-Input: "Hired John Smith as senior engineer"
-Output:
-{
-  "object_type": "user",
-  "name": "John Smith",
-  "job_title": "Senior Engineer",
-  "notes": "New hire"
 }
 
 Return ONLY valid JSON, no explanatory text before or after.
@@ -99,6 +119,7 @@ Return ONLY valid JSON, no explanatory text before or after.
 class LeadData(BaseModel):
     """Pydantic model for validated lead data."""
     object_type: str = Field(..., description="Type of Attio object: person, company, deal, or user")
+    intent: str = Field(default="create", description="Intent: create, update, or upsert")
     name: str = Field(..., description="Full name or company name")
     email: Optional[str] = Field(None, description="Email address")
     phone: Optional[str] = Field(None, description="Phone number")

@@ -48,19 +48,24 @@ class AttioClient:
         """
         Create or update a record in Attio (person, company, deal, or user).
 
-        Uses upsert logic (assert):
-        - For people: matches on email, updates if found, creates if not
-        - For companies: matches on domain, updates if found, creates if not
-        - Automatically determines the correct object type and endpoint
-        - If a field doesn't exist, it will be automatically created
+        Smart matching logic based on intent:
+        - UPDATE intent for people: Searches by name first, updates if exactly one match found
+        - UPSERT intent: Matches on email/phone (people) or domain (companies)
+        - CREATE intent: Always creates new record
+
+        For people without email/phone:
+        - If intent is "update", searches by name and uses PATCH if unique match found
+        - Otherwise creates new record
+
+        For companies: Matches on domain, updates if found, creates if not
+
+        Additional features:
+        - Automatically creates missing attributes
+        - Links people to their companies
         - Multiselect values are overwritten (not appended)
 
-        For people with companies, this will:
-        1. Create/update the company record first
-        2. Link the person to the company
-
         Args:
-            lead_data: Structured lead data from Gemini
+            lead_data: Structured lead data from Gemini (includes intent field)
 
         Returns:
             Dictionary containing created/updated record information
@@ -75,6 +80,25 @@ class AttioClient:
 
         # Convert lead data to dictionary
         data = self._lead_data_to_dict(lead_data)
+
+        # Handle UPDATE intent for people - search by name first
+        if lead_data.intent == "update" and lead_data.object_type == "person":
+            matches = self._search_person_by_name(lead_data.name)
+
+            if len(matches) == 1:
+                # Exactly one match found - update that person using PATCH
+                person_record = matches[0]
+                record_id = person_record.get('id', {}).get('record_id')
+
+                if record_id:
+                    logger.info(f"Found unique person match for '{lead_data.name}', will update record: {record_id}")
+                    return self._update_person_record(record_id, data, lead_data)
+                else:
+                    logger.warning(f"Person record found but no record_id available, falling back to create")
+            elif len(matches) > 1:
+                logger.warning(f"Found {len(matches)} people named '{lead_data.name}'. Cannot determine which to update without email/phone. Creating new record.")
+            else:
+                logger.info(f"No person named '{lead_data.name}' found. Will create new record.")
 
         # If creating a person with a company, create the company first
         company_record = None
@@ -112,22 +136,42 @@ class AttioClient:
 
         # Build query parameters for upsert (assert) logic
         params = {}
-        if lead_data.object_type == "person" and data.get('email'):
-            params['matching_attribute'] = 'email_addresses'
+        use_upsert = False
+
+        if lead_data.object_type == "person":
+            # For people: try to match on email, fallback to phone
+            if data.get('email'):
+                params['matching_attribute'] = 'email_addresses'
+                use_upsert = True
+            elif data.get('phone'):
+                params['matching_attribute'] = 'phone_numbers'
+                use_upsert = True
+            else:
+                logger.info("No email or phone provided, will create new person record")
         elif lead_data.object_type == "company" and company_domain:
             params['matching_attribute'] = 'domains'
+            use_upsert = True
 
         try:
-            logger.info(f"Upserting {lead_data.object_type} in Attio: {lead_data.name}")
-
-            # Use PUT for upsert (assert) - creates if not found, updates if found
-            response = requests.put(
-                endpoint,
-                headers=self.headers,
-                json=payload,
-                params=params,
-                timeout=15
-            )
+            if use_upsert:
+                logger.info(f"Upserting {lead_data.object_type} in Attio: {lead_data.name}")
+                # Use PUT for upsert (assert) - creates if not found, updates if found
+                response = requests.put(
+                    endpoint,
+                    headers=self.headers,
+                    json=payload,
+                    params=params,
+                    timeout=15
+                )
+            else:
+                logger.info(f"Creating new {lead_data.object_type} in Attio: {lead_data.name}")
+                # Use POST for creation when we don't have a matching attribute
+                response = requests.post(
+                    endpoint,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=15
+                )
 
             response.raise_for_status()
             created_record = response.json()
@@ -164,14 +208,22 @@ class AttioClient:
                                 self._create_attribute(object_slug, missing_attribute)
 
                                 # Retry the record creation/update
-                                logger.info(f"Retrying record upsert after creating attribute '{missing_attribute}'")
-                                response = requests.put(
-                                    endpoint,
-                                    headers=self.headers,
-                                    json=payload,
-                                    params=params,
-                                    timeout=15
-                                )
+                                logger.info(f"Retrying record operation after creating attribute '{missing_attribute}'")
+                                if use_upsert:
+                                    response = requests.put(
+                                        endpoint,
+                                        headers=self.headers,
+                                        json=payload,
+                                        params=params,
+                                        timeout=15
+                                    )
+                                else:
+                                    response = requests.post(
+                                        endpoint,
+                                        headers=self.headers,
+                                        json=payload,
+                                        timeout=15
+                                    )
                                 response.raise_for_status()
                                 created_record = response.json()
 
@@ -259,6 +311,140 @@ class AttioClient:
                     pass
             # Don't raise - the person was created successfully, just without the link
             # We log the error but don't fail the whole operation
+
+    def _update_person_record(self, record_id: str, data: Dict[str, Any], lead_data: LeadData) -> Dict[str, Any]:
+        """
+        Update an existing person record using PATCH.
+
+        Args:
+            record_id: The Attio record ID of the person to update
+            data: Dictionary with update data
+            lead_data: Original lead data with intent info
+
+        Returns:
+            Updated record information
+
+        Raises:
+            AttioAPIError: If update fails
+        """
+        try:
+            # Build update payload with only the fields that have values
+            update_values = {}
+
+            if data.get('email'):
+                update_values['email_addresses'] = [{'email_address': data['email']}]
+
+            if data.get('phone'):
+                update_values['phone_numbers'] = [{
+                    'country_code': None,
+                    'original_phone_number': data['phone'],
+                    'phone_number': data['phone']
+                }]
+
+            if data.get('job_title'):
+                update_values['job_title'] = data['job_title']
+
+            if data.get('location'):
+                update_values['primary_location'] = data['location']
+
+            if data.get('linkedin_url'):
+                update_values['linkedin'] = data['linkedin_url']
+
+            if data.get('notes'):
+                update_values['description'] = data['notes']
+
+            # Handle company linking if provided
+            if data.get('company'):
+                logger.info(f"Updating company for person to: {data['company']}")
+                company_record, company_domain = self._create_or_get_company(data['company'], data.get('notes'))
+
+                if company_record:
+                    record_id_val = company_record.get('id', {}).get('record_id')
+                    if record_id_val:
+                        update_values['company'] = [{
+                            'target_object': 'companies',
+                            'target_record_id': record_id_val
+                        }]
+                    elif company_domain:
+                        update_values['company'] = company_domain
+
+            payload = {
+                'data': {
+                    'values': update_values
+                }
+            }
+
+            endpoint = f"{self.base_url}/objects/people/records/{record_id}"
+
+            logger.info(f"Updating person record {record_id} with PATCH")
+            response = requests.patch(
+                endpoint,
+                headers=self.headers,
+                json=payload,
+                timeout=15
+            )
+
+            response.raise_for_status()
+            updated_record = response.json()
+
+            logger.info(f"Successfully updated person: {record_id}")
+            return updated_record
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to update person record: {e}")
+            error_detail = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_detail = error_data.get('message', str(e))
+                except:
+                    pass
+
+            raise AttioAPIError(f"Person update failed: {error_detail}")
+
+    def _search_person_by_name(self, name: str) -> list[Dict[str, Any]]:
+        """
+        Search for existing people by name using Attio query API.
+
+        Args:
+            name: Full name to search for
+
+        Returns:
+            List of matching person records (empty list if none found)
+        """
+        try:
+            endpoint = f"{self.base_url}/objects/people/records/query"
+
+            # Search using name filter with exact match
+            payload = {
+                "filter": {
+                    "name": name
+                },
+                "limit": 5  # Return up to 5 matches
+            }
+
+            logger.info(f"Searching for existing person: {name}")
+            response = requests.post(
+                endpoint,
+                headers=self.headers,
+                json=payload,
+                timeout=15
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            matches = result.get('data', [])
+            if matches:
+                logger.info(f"Found {len(matches)} person record(s) matching: {name}")
+            else:
+                logger.info(f"No existing person found for: {name}")
+
+            return matches
+
+        except Exception as e:
+            logger.error(f"Error searching for person by name: {e}")
+            return []
 
     def _find_existing_company(self, company_name: str, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
