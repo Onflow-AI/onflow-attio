@@ -1,0 +1,18 @@
+# Discord Bot Dependencies
+discord.py>=2.3.2
+
+# Google Generative AI (Gemini)
+google-generativeai>=0.3.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# LinkedIn Enrichment (Proxycurl API)
+# Note: Proxycurl doesn't have an official SDK, we'll use requests
+
+# Additional utilities
+aiohttp>=3.9.0  # For async HTTP requests
+pydantic>=2.5.0  # For data validation
